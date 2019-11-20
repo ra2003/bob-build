@@ -29,9 +29,9 @@ package core
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"android/soong/android"
 
@@ -47,36 +47,30 @@ const (
 )
 
 var (
-	loadConfigOnce   sync.Once
-	onceLoadedConfig *bobConfig
-
-	apctx = android.NewPackageContext("bob-build/core")
+	apctx        = android.NewPackageContext("bob-build/core")
+	bobConfigKey = android.NewOnceKey("bobConfigKey")
 )
 
-// During the build, Soong will do a "test" of each plugin, which loads the
-// module, including calling its `init()` functions. That means that we can't
-// load the config file in `init()`, because the tests would fail if it doesn't
-// exist. Work around this by deferring loading the config file until a module
-// factory is actually called.
-func soongGetConfig() *bobConfig {
-	loadConfigOnce.Do(func() {
-		onceLoadedConfig = &bobConfig{}
-		err := onceLoadedConfig.Properties.LoadConfig(jsonPath)
-		if err != nil {
-			panic(err)
-		}
-
-		if !onceLoadedConfig.Properties.GetBool("builder_soong") {
-			panic("Build bootstrapped for Soong, but Soong builder has not been enabled")
-		}
-		onceLoadedConfig.Generator = &soongGenerator{}
-	})
-	return onceLoadedConfig
-
+type androidConfig interface {
+	Config() android.Config
 }
 
-func getConfig(interface{}) *bobConfig {
-	return soongGetConfig()
+type blueprintConfig interface {
+	Config() interface{}
+}
+
+func getConfig(ctx interface{}) *bobConfig {
+	// Depending on who is calling, the context may be a Blueprint or an Android one.
+	// Check for Android first.
+	var aConfig android.Config
+
+	if androidCtx, ok := ctx.(androidConfig); ok {
+		aConfig = androidCtx.Config()
+	} else {
+		aConfig = ctx.(blueprintConfig).Config().(android.Config)
+	}
+
+	return aConfig.Once(bobConfigKey, func() interface{} { return initBob(aConfig) }).(*bobConfig)
 }
 
 type moduleBase struct {
@@ -202,36 +196,97 @@ func registerMutators(ctx android.RegisterMutatorsContext) {
 	ctx.TopDown("bob_build_actions", buildActionsMutator).Parallel()
 }
 
-func soongRegisterModule(name string, mf factoryWithConfig) {
-	// Create a closure adapting Bob's module factories to the format Soong uses.
-	factory := func() android.Module {
-		bpModule, properties := mf(soongGetConfig())
-		// This type assertion should always pass as long as every Bob
-		// module type embeds moduleBase
-		soongModule := bpModule.(android.Module)
-
-		for _, property := range properties {
-			soongModule.AddProperties(property)
-		}
-
-		return soongModule
-	}
-	android.RegisterModuleType(name, factory)
+type bobPluginSingleton struct {
 }
 
-func init() {
-	registerModuleTypes(soongRegisterModule)
+func bobPluginSingletonFactory() android.Singleton {
+	return bobPluginSingleton{}
+}
+
+func (bobPluginSingleton) GenerateBuildActions(ctx android.SingletonContext) {
+	config := getConfig(ctx)
+	for _, d := range config.globDeps {
+		ctx.GlobWithDeps(d, []string{})
+	}
+}
+
+func initBob(aConfig android.Config) interface{} {
+	c := &bobConfig{}
+
+	// Look for a platform/build specific configuration file "bob-device-rel.json".
+	buildType := "rel"
+	if aConfig.Eng() {
+		buildType = "eng"
+	}
+	var file strings.Builder
+	fmt.Fprintf(&file, "bob-%s-%s.json", aConfig.DeviceName(), buildType)
+
+	// Look for the configuration in the build directory, and fallback to
+	// configuration committed in the source directory (under config).
+	filename := filepath.Join(aConfig.BuildDir(), file.String())
+
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		// Use a glob to recheck this file, so that if it is added the
+		// primary builder reruns
+		c.globDeps = append(c.globDeps, filename)
+
+		filename = filepath.Join("config", file.String())
+	}
+
+	err := c.Properties.LoadConfig(filename)
+	if err == nil {
+		if !c.Properties.GetBool("builder_soong") {
+			err = fmt.Errorf("Build bootstrapped for Soong, but Soong builder has not been enabled")
+		}
+	}
+
+	c.Generator = &soongGenerator{}
+
+	registerModuleTypes(func(name string, mf factoryWithConfig) {
+		// Create a closure adapting Bob's module factories to the format Soong uses.
+		factory := func() android.Module {
+			bpModule, properties := mf(c)
+			// This type assertion should always pass as long as every Bob
+			// module type embeds moduleBase
+			soongModule := bpModule.(android.Module)
+
+			for _, property := range properties {
+				soongModule.AddProperties(property)
+			}
+
+			return soongModule
+		}
+		android.RegisterModuleType(name, factory)
+	})
 
 	// Some Bob module types generate _other_ module types in order to
 	// execute custom Ninja rules. These should not be added directly to
 	// `build.bp` files, so we do not register the module types here with
 	// `android.RegisterModuleType`. Instead, they are simply created using
 	// `TopDownMutatorContext.CreateModule` when required.
-
 	android.PreArchMutators(registerMutators)
 
 	// Depend on the configuration
-	apctx.AddNinjaFileDeps(jsonPath)
+	apctx.AddNinjaFileDeps(filename)
+
+	if err != nil {
+		panic(err)
+	}
+
+	return c
+}
+
+type bobPlugin struct{}
+
+func (bobPlugin) InitPlugin(config android.Config) error {
+	_ = config.Once(bobConfigKey, func() interface{} { return initBob(config) })
+	return nil
+}
+
+func init() {
+	android.RegisterPlugin(bobPlugin{})
+
+	android.RegisterSingletonType("bob_plugin", bobPluginSingletonFactory)
 }
 
 // The working directory is always the root of the Android source tree, but,

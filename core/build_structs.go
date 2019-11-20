@@ -105,7 +105,17 @@ type generatorBackend interface {
 // The bobConfig type is stored against the Blueprint context, and allows us to
 // retrieve the backend and configuration values from within Blueprint callbacks.
 type bobConfig struct {
-	Generator  generatorBackend
+	// File paths that we need to create globs for. This is only used
+	// from places where we don't have a BaseModuleContext. The
+	// created dependency means that if the result of the glob
+	// changes, the primary builder will rerun.
+	globDeps []string
+
+	// The generator backend. This will either be the ninja or the
+	// android make backend.
+	Generator generatorBackend
+
+	// Configuration values from bob.config
 	Properties configProperties
 }
 

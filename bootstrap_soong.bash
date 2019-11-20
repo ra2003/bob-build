@@ -25,6 +25,16 @@ function die {
     exit 1
 }
 
+CONFIG_IN_SRC=0
+while getopts "s" opt ; do
+    case "${opt}" in
+        s)
+            CONFIG_IN_SRC=1
+            ;;
+    esac
+done
+shift $((OPTIND - 1))
+
 # ${VAR:-} will substitute an empty string if the variable is unset, which
 # stops `set -u` complaining before `die` is invoked.
 [[ -z ${SRCDIR:-} ]] && die "\$SRCDIR not set"
@@ -34,6 +44,9 @@ function die {
 
 [[ -e ${SRCDIR}/Android.mk ]] && die "${SRCDIR}/Android.mk conflicts with Android.bp. Please remove!"
 [[ -f "build/make/core/envsetup.mk" ]] || die "Working dir must be the root of an Android build tree"
+
+# Calculate the base name used for configuration files
+CONFIG="bob-${TARGET_PRODUCT}-${TARGET_BUILD_VARIANT}"
 
 # The following variables are optional - give them empty default values.
 BOB_CONFIG_OPTS="${BOB_CONFIG_OPTS-}"
@@ -46,8 +59,15 @@ source "${BOB_DIR}/bootstrap/utils.bash"
 BUILDDIR="${OUT}/gen/STATIC_LIBRARIES/${PROJ_NAME}-config"
 mkdir -p "${BUILDDIR}"
 
-CONFIG_FILE="${BUILDDIR}/${CONFIGNAME}"
-CONFIG_JSON="${BUILDDIR}/config.json"
+if [ ${CONFIG_IN_SRC} -eq 1 ] ; then
+    CONFIG_FILE="${ANDROID_BUILD_TOP}/config/${CONFIG}.config"
+    CONFIG_JSON="${ANDROID_BUILD_TOP}/config/${CONFIG}.json"
+    mkdir -p $(dirname "${CONFIG_JSON}")
+else
+    # Use the out/soong directory to match android.Config.BuildDir()
+    CONFIG_FILE="${ANDROID_BUILD_TOP}/out/soong/${CONFIG}.config"
+    CONFIG_JSON="${ANDROID_BUILD_TOP}/out/soong/${CONFIG}.json"
+fi
 
 WORKDIR="$(pwd)" write_bootstrap
 
@@ -64,7 +84,6 @@ sed -e "s#@@BOB_CONFIG_OPTS@@#${BOB_CONFIG_OPTS}#" \
     -e "s#@@BOB_DIR@@#${BOB_DIR}#" \
     -e "s#@@BUILDDIR@@#${BUILDDIR}#" \
     -e "s#@@CONFIG_FILE@@#${CONFIG_FILE}#" \
-    -e "s#@@CONFIG_JSON@@#${CONFIG_JSON}#" \
     -e "s#@@SRCDIR@@#${SRCDIR}#" \
     "${BOB_DIR}/core/soong_config.go.in" > "${TMP_GO_CONFIG}"
 rsync --checksum "${TMP_GO_CONFIG}" "${SOONG_CONFIG_GO}"

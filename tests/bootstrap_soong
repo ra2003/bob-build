@@ -24,6 +24,16 @@ trap 'echo "*** Unexpected error in $0 ***"' ERR
 SCRIPT_DIR=$(dirname "${BASH_SOURCE[0]}")
 BOB_DIR="${SCRIPT_DIR}/.."
 
+BOOTSTRAP_OPTS=
+while getopts "s" opt ; do
+    case "${opt}" in
+        s)
+            BOOTSTRAP_OPTS=-s
+            ;;
+    esac
+done
+shift $((OPTIND - 1))
+
 source "${SCRIPT_DIR}/bootstrap_utils.sh"
 
 # Add a symlink in the source directory to the parent directory to simulate a
@@ -46,7 +56,7 @@ export CONFIGNAME="bob.config"
 export TOPNAME="build.bp"
 export BLUEPRINT_LIST_FILE="${SRCDIR}/bplist"
 
-"${BOB_DIR}/bootstrap_soong.bash"
+"${BOB_DIR}/bootstrap_soong.bash" ${BOOTSTRAP_OPTS}
 
 # Until Soong support is complete, remove Android.bp symlinks in directories
 # whose tests require unimplemented features.

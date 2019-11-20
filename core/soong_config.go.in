@@ -25,7 +25,6 @@ var (
 	bobdir     = "@@BOB_DIR@@"
 	configFile = "@@CONFIG_FILE@@"
 	configOpts = "@@BOB_CONFIG_OPTS@@"
-	jsonPath   = "@@CONFIG_JSON@@"
 	srcdir     = "@@SRCDIR@@"
 )
 
